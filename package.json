@@ -18,6 +18,7 @@
     "solidity-coverage": "^0.7.22",
     "ts-node": "^10.9.2",
     "typechain": "^8.3.2",
-    "typescript": "^5.3.3"
+    "typescript": "^5.3.3",
+    "xrpl": "^2.14.0"
   }
 }

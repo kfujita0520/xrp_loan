@@ -21,10 +21,11 @@ interface IXRPBridgeLoanTerm {
 
 
     /* ========== EVENTS ========== */
+    event InitialDeposit(address depositor, uint256 amount);
     event CreateClaimId(uint256 claimId);
     event Lend(address indexed lender, uint256 principal);
-    event ClaimPrincipal(address from, address indexed lender, uint256 amount);
-    event ClaimInterest(address indexed from, address lender, uint256 amount);
+    event ClaimPrincipal(address lender, uint256 claimId, uint256 amount);
+    event ClaimInterest(address lender, uint256 claimId, uint256 amount);
     event DefaultLoan();
     event ApproveLoanTerm();
     event DepositCollateral(address indexed owner, uint256 tokenId);

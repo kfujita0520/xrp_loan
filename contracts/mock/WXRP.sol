@@ -2,15 +2,19 @@
 pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract WXRP is ERC20, Ownable {
-    constructor(uint256 initialSupply) ERC20("USD Token", "USD") Ownable(msg.sender) {
-        _mint(msg.sender, initialSupply);
-        //_mint(msg.sender, 1000000 * 10**18);
+contract WXRP is ERC20 {
+    constructor() ERC20("Wrapped XRP", "WXRP") {
+
     }
 
-    function mint(uint256 amount) external onlyOwner {
-        _mint(msg.sender, amount);
+    function deposit() public payable {
+        _mint(msg.sender, msg.value);
+    }
+
+    function withdraw(uint amount) public {
+        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
+        _burn(msg.sender, amount);
+        payable(msg.sender).transfer(amount);
     }
 }

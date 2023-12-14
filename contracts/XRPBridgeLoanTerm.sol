@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-//import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
@@ -22,6 +22,7 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
     uint256 public constant SECONDS_IN_A_WEEK = 604800;
     uint256 public constant SECONDS_IN_A_YEAR = 31449600;
     uint256 public constant DENOMINATOR = 10000;
+    uint256 public signatureReward = 1 ether;
 
 
     /* ========== STATE VARIABLES ========== */
@@ -44,6 +45,8 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
     address public borrower;//the account of borrower
     address public lender;//the account of lender
     address public admin;//the account of platform admin
+    address public borrowerXRP;
+    address public lenderXRP;
     LoanStatus public status;
     NFT public collateral;//TODO currently only support one NFT collateral. Multi-NFT collateral can be achieved by making this field as array.
 
@@ -59,8 +62,8 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
         uint64 _interestRate,
         address _borrower,
         address _lender,
-        address _admin,
-        LoanStatus _status,
+        address _lenderXRP,
+        address _borrowerXRP,
         address _bridgeDoor
     ) {
         require(_totalAmount > 0, "amount of loan should be positive");
@@ -70,8 +73,10 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
         interestRate = _interestRate;
         borrower = _borrower;
         lender = _lender;
-        admin = _admin;
-        status = _status;
+        admin = msg.sender;
+        borrowerXRP = _borrowerXRP;
+        lenderXRP = _lenderXRP;
+        status = LoanStatus.Created;
         brideDoor = IBridgeDoorNative(_bridgeDoor);
         redeemedAmount = 0;
         paidInterest = 0;
@@ -109,7 +114,7 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
     function lend() external override onlyLender
     {
         require(status == LoanStatus.Activated, "cannot loan in current status");
-        uint256 claimId = brideDoor.createClaimId(lender);
+        uint256 claimId = brideDoor.createClaimId{value: signatureReward}(lender);
         emit CreateClaimId(claimId);
         //deposit process will be done in receive() function
         //TODO: Consider support claim() function in this contract for the case payment has not processed automatically
@@ -124,19 +129,20 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
     function claimInterest(uint256 claimId) public override onlyLender
     {
         //when status is Redeemed, use claimPrincipal. claimInterest will be performed altogether
-        require (status == LoanStatus.Started, "Not the status user can claim the interest");
+        require (status == LoanStatus.Started || status == LoanStatus.Redeemed, "Not the status user can claim the interest");
         uint256 claimableAmount = claimableInterest();
         if (claimableAmount > 0) {
 
-            //TODO not sure what should be the value of receiver in case of cross chain. To be confirmed.
-            address receiver = 0xc916365Fc2Eba7140256F961FD2F3b0d12024365;
 
             if (address(this).balance >= claimableAmount) {
-                brideDoor.commit(receiver, claimId, claimableAmount);
+                brideDoor.commit{value: claimableAmount + signatureReward}(lenderXRP, claimId, claimableAmount);
                 claimedInterest += claimableAmount;
-                emit ClaimInterest(borrower, msg.sender, claimableAmount);//TODO change event interface
+                emit ClaimInterest(msg.sender, claimId, claimableAmount);
+                if (status == LoanStatus.Redeemed && claimableInterest()==0 && withdrawablePrincipal()==0){
+                    status = LoanStatus.Completed;
+                }
             } else {
-                brideDoor.commit(receiver, claimId, address(this).balance);
+                brideDoor.commit{value: claimableAmount + signatureReward}(lenderXRP, claimId, address(this).balance);
                 claimedInterest += address(this).balance;
                 status = LoanStatus.Defaulted;
                 emit DefaultLoan();
@@ -184,11 +190,9 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
     function _withdrawPrincipal(uint256 claimId) internal {
         uint256 amount = withdrawablePrincipal();
         if (amount>0) {
-            //TODO reciever value is temporally
-            address receiver = 0xc916365Fc2Eba7140256F961FD2F3b0d12024365;
-            brideDoor.commit(receiver, claimId, amount);
+            brideDoor.commit{value: amount + signatureReward}(lenderXRP, claimId, amount);
             claimedPrincipal += amount;
-            emit ClaimPrincipal(address(this), msg.sender, amount);
+            emit ClaimPrincipal(msg.sender, claimId, amount);//chainge interface
         }
     }
 
@@ -204,9 +208,8 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
 
     function cancelBorrowing(uint256 claimId) external onlyBorrower {
         require(status == LoanStatus.Activated, "borrower can cancel only before the loan starts");
-        //TODO reciever value is temporally
-        address receiver = 0xc916365Fc2Eba7140256F961FD2F3b0d12024365;
-        brideDoor.commit(receiver, claimId, totalAmount);
+
+        brideDoor.commit{value: principal + signatureReward}(borrowerXRP, claimId, principal);
         status = LoanStatus.Cancelled;
         emit CancelLoan();
 
@@ -219,9 +222,7 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
         maturityTime = block.timestamp + maturityPeriod;
         lastCheckTime = initiatedTime;
         status = LoanStatus.Started;
-        //TODO receiver value is temporally
-        address receiver = 0xc916365Fc2Eba7140256F961FD2F3b0d12024365;
-        brideDoor.commit(receiver, claimId, totalAmount);
+        brideDoor.commit{value: totalAmount + signatureReward}(borrowerXRP, claimId, totalAmount);
         emit StartLoan();
     }
 
@@ -230,7 +231,7 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
         require(status == LoanStatus.Started, "loan term has not started yet");
         uint256 amount = currentPrincipal();
         if (amount>0){
-            uint256 claimId = brideDoor.createClaimId(borrower);
+            uint256 claimId = brideDoor.createClaimId{value: signatureReward}(borrower);
             emit CreateClaimId(claimId);
             status = LoanStatus.PrincipalRedeeming;
         }
@@ -241,7 +242,7 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
         require(status == LoanStatus.Started || (status == LoanStatus.Redeemed && (accruedInterest() - paidInterest) > 0), "not the status to redeem interest");
         uint256 amount = accruedInterest() - paidInterest;
         if (amount>0){
-            uint256 claimId = brideDoor.createClaimId(borrower);
+            uint256 claimId = brideDoor.createClaimId{value: signatureReward}(borrower);
             emit CreateClaimId(claimId);
         }
 
@@ -256,19 +257,20 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
 
 
     function withdrawCollateral() external onlyBorrower {
-        if(status == LoanStatus.Completed || status == LoanStatus.Cancelled)
-        IERC721(collateral.owner).safeTransferFrom(address(this), borrower, collateral.tokenId);
-        collateral.owner = address(0);
-        emit WithdrawCollateral(borrower, collateral.owner, collateral.tokenId);
+        if(status == LoanStatus.Redeemed || status == LoanStatus.Cancelled) {
+            IERC721(collateral.owner).transferFrom(address(this), borrower, collateral.tokenId);
+             emit WithdrawCollateral(borrower, collateral.owner, collateral.tokenId);
+            collateral.owner = address(0);
+        }
     }
 
     /* ========== Admin FUNCTIONS ========== */
     function liquidateCollateral() external onlyAdmin {
         require(status == LoanStatus.Defaulted, "The loan is not default");
 
-        IERC721(collateral.owner).safeTransferFrom(address(this), admin, collateral.tokenId);
-        collateral.owner = address(0);
+        IERC721(collateral.owner).transferFrom(address(this), admin, collateral.tokenId);
         emit LiquidateCollateral(borrower, collateral.owner, collateral.tokenId);
+        collateral.owner = address(0);
     }
 
     /* ========== MODIFIERS ========== */
@@ -288,28 +290,30 @@ contract XRPBridgeLoanTerm is IXRPBridgeLoanTerm
     }
 
     receive() external payable {
-        if(status == LoanStatus.Activated){
+        if (status == LoanStatus.Created) {
+            emit InitialDeposit(msg.sender, msg.value);
+        } else if(status == LoanStatus.Activated){
             //TODO check that msg.sender should be gnosis multisig account of BridgeDoorNative
             principal += msg.value;
             emit Lend(msg.sender, principal);
         } else if (status == LoanStatus.Started || (status == LoanStatus.Redeemed && (accruedInterest() - paidInterest) > 0)) {
+            _checkAccruedInterest();
             paidInterest += msg.value;
             emit RedeemInterest(msg.sender, msg.value);
         } else if (status == LoanStatus.PrincipalRedeeming) {
+            _checkAccruedInterest(); //need to execute this before redeemedAmount is updated. because currentPrincipal() will be changed.
             redeemedAmount += msg.value;
             if (currentPrincipal()==0) {
-                _checkAccruedInterest(); //need to execute this before redeemedAmount is updated. because currentPrincipal() will be changed.
                 status = LoanStatus.Redeemed;
                 if(block.timestamp < maturityTime) {
                     maturityTime = block.timestamp; //for early redemption, needs to stop accruing interest at this point
                 }
             } else {
-                _checkAccruedInterest();
                 status = LoanStatus.Started;
             }
             emit RedeemPrincipal(msg.sender, msg.value);
 
-        } else {
+        } else { 
             //TODO: emit warning event for unexpected deposit
         }
     }
